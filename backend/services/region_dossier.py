@@ -4,7 +4,7 @@ import concurrent.futures
 from urllib.parse import quote
 import requests as _requests
 from cachetools import TTLCache
-from services.network_utils import fetch_with_curl, DEFAULT_USER_AGENT
+from services.network_utils import fetch_with_curl, outbound_user_agent
 
 logger = logging.getLogger(__name__)
 
@@ -15,24 +15,30 @@ dossier_cache = TTLCache(maxsize=500, ttl=86400)
 # Nominatim requires max 1 req/sec — track last call time
 _nominatim_last_call = 0.0
 
-# Issue #218 / #219 (tg12): Wikimedia's User-Agent policy requires API
+# Issues #218 / #219 (tg12): Wikimedia's User-Agent policy requires API
 # clients to identify themselves with a stable User-Agent that includes
-# a contact path. Bare "python-requests/x.y" or generic strings violate
-# the policy and risk getting blocked. We send the project default UA
-# (operator-overridable via SHADOWBROKER_USER_AGENT) on EVERY outbound
-# Wikimedia request, plus the policy-recommended Api-User-Agent which
-# Wikimedia explicitly accepts on top of the regular UA.
+# a contact path.
 #
-# This is documented and stable so a Wikimedia operator who wants to
-# rate-limit or contact us has a fixed identifier to grep for.
-_WIKIMEDIA_REQUEST_HEADERS = {
-    "User-Agent": DEFAULT_USER_AGENT,
-    "Api-User-Agent": (
-        f"{DEFAULT_USER_AGENT} "
-        "(+https://github.com/BigBodyCobain/Shadowbroker; "
-        "report issues at /issues)"
-    ),
-}
+# Round 7a: the original fix in PR #284 used a single project-wide
+# identifier, which from Wikimedia's perspective made every Shadowbroker
+# install in the world look like one giant scraper. If one install
+# misbehaved, their only recourse was to block "Shadowbroker" as a
+# whole. We now build the headers from ``outbound_user_agent('wikimedia')``
+# which embeds the per-install operator handle (auto-generated or
+# operator-chosen), so Wikimedia can rate-limit / contact the specific
+# install instead of the project.
+
+
+def _wikimedia_request_headers() -> dict[str, str]:
+    ua = outbound_user_agent("wikimedia")
+    return {
+        "User-Agent": ua,
+        # Browser-JS-style header that Wikimedia's policy explicitly
+        # accepts on top of (or instead of) User-Agent. We send both so
+        # whichever the upstream prefers, the per-operator handle is
+        # always available.
+        "Api-User-Agent": ua,
+    }
 
 
 def _reverse_geocode_offline(lat: float, lng: float) -> dict:
@@ -64,9 +70,7 @@ def _reverse_geocode(lat: float, lng: float) -> dict:
         f"https://nominatim.openstreetmap.org/reverse?"
         f"lat={lat}&lon={lng}&format=json&zoom=10&addressdetails=1&accept-language=en"
     )
-    headers = {
-        "User-Agent": "ShadowBroker-OSINT/1.0 (live-risk-dashboard; contact@shadowbroker.app)"
-    }
+    headers = {"User-Agent": outbound_user_agent("nominatim")}
 
     for attempt in range(2):
         # Enforce Nominatim's 1 req/sec policy
@@ -146,7 +150,7 @@ def _fetch_wikidata_leader(country_name: str) -> dict:
         # specific Api-User-Agent that the policy specifically asks
         # for, since this request originates from a backend service
         # that proxies on behalf of (potentially many) browser users.
-        res = fetch_with_curl(url, timeout=6, headers=_WIKIMEDIA_REQUEST_HEADERS)
+        res = fetch_with_curl(url, timeout=6, headers=_wikimedia_request_headers())
         if res.status_code == 200:
             results = res.json().get("results", {}).get("bindings", [])
             if results:
@@ -174,7 +178,7 @@ def _fetch_local_wiki_summary(place_name: str, country_name: str = "") -> dict:
         try:
             # Issue #219 (tg12): identify ourselves to Wikimedia per
             # their UA policy; see _fetch_wikidata_leader above.
-            res = fetch_with_curl(url, timeout=5, headers=_WIKIMEDIA_REQUEST_HEADERS)
+            res = fetch_with_curl(url, timeout=5, headers=_wikimedia_request_headers())
             if res.status_code == 200:
                 data = res.json()
                 if data.get("type") != "disambiguation":

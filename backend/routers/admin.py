@@ -83,6 +83,28 @@ async def api_get_keys_meta(request: Request):
 
 
 @router.get(
+    "/api/settings/operator-handle",
+    dependencies=[Depends(require_local_operator)],
+)
+@limiter.limit("60/minute")
+async def api_get_operator_handle(request: Request):
+    """Round 7a: return the per-install operator handle so the frontend
+    can include it in browser-direct third-party API calls (Wikipedia /
+    Wikidata via lib/wikimediaClient). The handle is auto-generated on
+    first use; operators can override it via the OPERATOR_HANDLE setting
+    or the env var of the same name.
+
+    Gated on local-operator: legitimate browser usage goes through the
+    Next.js proxy which auto-attaches the admin key; remote scanners get
+    403. The handle itself isn't a secret (it's sent to every third-party
+    API the operator touches), but admin-gating it matches the rest of
+    the settings endpoints and follows least-privilege.
+    """
+    from services.network_utils import get_operator_handle
+    return {"handle": get_operator_handle()}
+
+
+@router.get(
     "/api/settings/news-feeds",
     dependencies=[Depends(require_local_operator)],
 )

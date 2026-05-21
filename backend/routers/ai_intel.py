@@ -18,6 +18,12 @@ from auth import require_local_operator, require_openclaw_or_local
 from limiter import limiter
 from services.fetchers._store import latest_data as _latest_data
 
+
+
+def _ai_intel_user_agent() -> str:
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("ai-intel")
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -447,7 +453,7 @@ async def ai_satellite_images(
             "https://planetarycomputer.microsoft.com/api/stac/v1/search",
             json=search_payload,
             timeout=10,
-            headers={"User-Agent": "ShadowBroker-OSINT/1.0 (ai-intel)"},
+            headers={"User-Agent": _ai_intel_user_agent()},
         )
         resp.raise_for_status()
         features = resp.json().get("features", [])

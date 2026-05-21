@@ -20,7 +20,11 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 
 _SHODAN_BASE = "https://api.shodan.io"
-_USER_AGENT = "ShadowBroker/0.9.79 local Shodan connector"
+# Round 7a: per-install attribution. Shodan already has the operator API
+# key for billing, but the UA still identifies the install.
+def _shodan_user_agent():
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("shodan")
 _REQUEST_TIMEOUT = 15
 _MIN_INTERVAL_SECONDS = 1.05  # Shodan docs say API plans are rate limited to ~1 req/sec.
 _DEFAULT_SEARCH_PAGES = 1
@@ -179,7 +183,7 @@ def _request(path: str, *, params: dict[str, Any], cache: TTLCache[str, dict[str
                 f"{_SHODAN_BASE}{path}",
                 params=payload,
                 timeout=_REQUEST_TIMEOUT,
-                headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+                headers={"User-Agent": _shodan_user_agent(), "Accept": "application/json"},
             )
         finally:
             _last_request_at = time.monotonic()

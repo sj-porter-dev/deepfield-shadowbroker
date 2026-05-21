@@ -11,10 +11,19 @@ import requests
 from datetime import datetime, timedelta
 from cachetools import TTLCache
 
+from services.network_utils import outbound_user_agent
+
 logger = logging.getLogger(__name__)
 
 # Cache by rounded lat/lon (0.02° grid ~= 2km), TTL 1 hour
 _sentinel_cache = TTLCache(maxsize=200, ttl=3600)
+
+
+def _planetary_user_agent() -> str:
+    # Round 7a: per-install handle so Microsoft Planetary Computer can
+    # attribute requests to the specific operator rather than treating
+    # the whole Shadowbroker user base as one entity.
+    return outbound_user_agent("sentinel2-planetary-computer")
 
 
 def _esri_imagery_fallback(lat: float, lng: float) -> dict:
@@ -64,7 +73,7 @@ def search_sentinel2_scene(lat: float, lng: float) -> dict:
             "https://planetarycomputer.microsoft.com/api/stac/v1/search",
             json=search_payload,
             timeout=8,
-            headers={"User-Agent": "ShadowBroker-OSINT/1.0 (live-risk-dashboard)"},
+            headers={"User-Agent": _planetary_user_agent()},
         )
         search_res.raise_for_status()
         data = search_res.json()

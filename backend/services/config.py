@@ -295,6 +295,19 @@ class Settings(BaseSettings):
     # service operator can identify per-install traffic instead of a generic
     # "ShadowBroker" aggregate.
     MESHTASTIC_OPERATOR_CALLSIGN: str = ""
+    # Per-install operator handle used in the User-Agent for EVERY third-party
+    # API the backend calls (Wikipedia, Wikidata, Nominatim, GDELT, OpenMHz,
+    # Broadcastify, weather.gov, NUFORC, etc.). The default is empty, in which
+    # case backend/services/network_utils.py auto-generates a stable
+    # pseudonymous handle like "operator-7f3a92" on first use and caches it.
+    # Operators who want to identify themselves with a real handle can set
+    # this; operators who want to stay pseudonymous can leave it empty.
+    #
+    # The handle is sent ONLY to public third-party APIs. It is NEVER mixed
+    # into mesh / Wormhole / Infonet identity (those have their own crypto
+    # identity layer; conflating the two would leak public attribution into
+    # private mesh state).
+    OPERATOR_HANDLE: str = ""
 
     # SAR (Synthetic Aperture Radar) data layer
     # Mode A — free catalog metadata, no account, default-on

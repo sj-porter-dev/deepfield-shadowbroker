@@ -34,6 +34,11 @@ from services.sar.sar_config import (
     copernicus_token,
     earthdata_token,
 )
+
+
+def _sar_user_agent() -> str:
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("sar-products")
 from services.sar.sar_normalize import (
     SarAnomaly,
     evidence_hash_for_payload,
@@ -442,7 +447,7 @@ def _fetch_unosat_packages() -> list[dict[str, Any]]:
     # HDX CKAN returns 406 without explicit Accept + a browser-ish UA.
     hdx_headers = {
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; ShadowBroker-SAR/1.0)",
+        "User-Agent": _sar_user_agent(),
     }
     try:
         resp = fetch_with_curl(url, timeout=20, headers=hdx_headers)

@@ -21,6 +21,13 @@ from typing import Any
 import defusedxml.ElementTree as ET
 import requests
 
+
+
+def _aircraft_db_user_agent() -> str:
+    """Round 7a: lazy import so the per-install operator handle is included."""
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("aircraft-database")
+
 logger = logging.getLogger(__name__)
 
 _BUCKET_LIST_URL = (
@@ -44,7 +51,7 @@ def _latest_snapshot_key() -> str:
     response = requests.get(
         _BUCKET_LIST_URL,
         timeout=_LIST_TIMEOUT_S,
-        headers={"User-Agent": _USER_AGENT},
+        headers={"User-Agent": _aircraft_db_user_agent()},
     )
     response.raise_for_status()
     root = ET.fromstring(response.text)
@@ -71,7 +78,7 @@ def _stream_csv_index(url: str) -> dict[str, dict[str, str]]:
         url,
         timeout=_DOWNLOAD_TIMEOUT_S,
         stream=True,
-        headers={"User-Agent": _USER_AGENT},
+        headers={"User-Agent": _aircraft_db_user_agent()},
     ) as response:
         response.raise_for_status()
         line_iter = (

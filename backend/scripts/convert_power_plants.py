@@ -20,7 +20,17 @@ OUT_PATH = Path(__file__).parent.parent / "data" / "power_plants.json"
 
 def main() -> None:
     print(f"Downloading WRI Global Power Plant Database from GitHub...")
-    req = urllib.request.Request(CSV_URL, headers={"User-Agent": "ShadowBroker-OSINT/1.0"})
+    # Round 7a: release-time data refresher. Uses the per-operator UA if
+    # available, otherwise a release-script-specific identifier. This
+    # script is run by the maintainer at release time, NOT at runtime,
+    # so an aggregate UA is acceptable; we still use the helper so the
+    # behavior matches the rest of the project.
+    try:
+        from services.network_utils import outbound_user_agent
+        ua = outbound_user_agent("release-script-power-plants")
+    except Exception:
+        ua = "Shadowbroker/0.9 (release-script-power-plants; +https://github.com/BigBodyCobain/Shadowbroker/issues)"
+    req = urllib.request.Request(CSV_URL, headers={"User-Agent": ua})
     with urllib.request.urlopen(req, timeout=60) as resp:
         raw = resp.read().decode("utf-8")
 

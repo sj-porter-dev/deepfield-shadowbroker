@@ -21,9 +21,17 @@ _cache_lock = threading.Lock()
 _local_search_cache: List[Dict[str, Any]] | None = None
 _local_search_lock = threading.Lock()
 
-_USER_AGENT = os.environ.get(
-    "NOMINATIM_USER_AGENT", "ShadowBroker/1.0 (https://github.com/BigBodyCobain/Shadowbroker)"
-)
+# Round 7a: per-install operator handle threads through every Nominatim
+# call. NOMINATIM_USER_AGENT env override is still honored for operators
+# who run a custom relay / known good identity, but the default uses the
+# per-install handle so OpenStreetMap can rate-limit per install instead
+# of treating "Shadowbroker" as one big offender.
+def _nominatim_user_agent() -> str:
+    override = os.environ.get("NOMINATIM_USER_AGENT", "").strip()
+    if override:
+        return override
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("nominatim")
 
 
 def _get_cache(key: str):
@@ -178,7 +186,7 @@ def search_geocode(query: str, limit: int = 5, local_only: bool = False) -> List
         res = fetch_with_curl(
             url,
             headers={
-                "User-Agent": _USER_AGENT,
+                "User-Agent": _nominatim_user_agent(),
                 "Accept-Language": "en",
             },
             timeout=6,
@@ -241,7 +249,7 @@ def reverse_geocode(lat: float, lng: float, local_only: bool = False) -> Dict[st
         res = fetch_with_curl(
             url,
             headers={
-                "User-Agent": _USER_AGENT,
+                "User-Agent": _nominatim_user_agent(),
                 "Accept-Language": "en",
             },
             timeout=6,

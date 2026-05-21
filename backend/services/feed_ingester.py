@@ -16,7 +16,14 @@ from typing import Any
 
 import requests
 
+from services.network_utils import outbound_user_agent
+
 logger = logging.getLogger(__name__)
+
+
+def _feed_ingester_user_agent() -> str:
+    # Round 7a: per-install attribution for operator-curated feed URLs.
+    return outbound_user_agent("feed-ingester")
 
 # ---------------------------------------------------------------------------
 # State
@@ -157,7 +164,7 @@ def _fetch_layer_feed(layer: dict[str, Any]) -> None:
         resp = requests.get(
             feed_url,
             timeout=_FETCH_TIMEOUT,
-            headers={"User-Agent": "ShadowBroker-FeedIngester/1.0"},
+            headers={"User-Agent": _feed_ingester_user_agent()},
         )
         resp.raise_for_status()
         data = resp.json()

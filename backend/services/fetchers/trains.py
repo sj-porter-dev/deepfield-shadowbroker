@@ -10,6 +10,12 @@ from datetime import datetime, timezone
 from services.fetchers._store import _data_lock, _mark_fresh, latest_data
 from services.network_utils import fetch_with_curl
 
+
+
+def _trains_user_agent() -> str:
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("trains")
+
 logger = logging.getLogger(__name__)
 
 _EARTH_RADIUS_KM = 6371.0
@@ -379,7 +385,7 @@ def _fetch_digitraffic() -> list[dict]:
             timeout=15,
             headers={
                 "Accept-Encoding": "gzip",
-                "User-Agent": "ShadowBroker-OSINT/1.0",
+                "User-Agent": _trains_user_agent(),
             },
         )
         if resp.status_code != 200:

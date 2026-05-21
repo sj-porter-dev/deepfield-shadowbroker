@@ -6,7 +6,7 @@ import heapq
 import logging
 from pathlib import Path
 from cachetools import TTLCache
-from services.network_utils import fetch_with_curl
+from services.network_utils import fetch_with_curl, outbound_user_agent
 from services.fetchers._store import latest_data, _data_lock, _mark_fresh
 from services.fetchers.retry import with_retry
 
@@ -29,7 +29,7 @@ def _geocode_region(region_name: str, country_name: str) -> tuple:
 
         query = urllib.parse.quote(f"{region_name}, {country_name}")
         url = f"https://nominatim.openstreetmap.org/search?q={query}&format=json&limit=1"
-        response = fetch_with_curl(url, timeout=8, headers={"User-Agent": "ShadowBroker-OSINT/1.0"})
+        response = fetch_with_curl(url, timeout=8, headers={"User-Agent": outbound_user_agent("infrastructure-data")})
         if response.status_code == 200:
             results = response.json()
             if results:

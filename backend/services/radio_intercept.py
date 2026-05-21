@@ -2,13 +2,33 @@ import requests
 from bs4 import BeautifulSoup
 import logging
 from cachetools import cached, TTLCache
-import cloudscraper
 import reverse_geocoder as rg
 from urllib.parse import urlparse
+
+from services.network_utils import outbound_user_agent
 
 logger = logging.getLogger(__name__)
 
 _OPENMHZ_AUDIO_HOSTS = {"media.openmhz.com", "media2.openmhz.com", "media3.openmhz.com"}
+
+
+# Round 7a / Issues #289, #290, #291 (tg12 audit):
+# We previously sent a spoofed Chrome User-Agent and (for OpenMHz) used
+# cloudscraper to bypass anti-bot challenges. Both are dishonest and ToS-
+# unfriendly. We now send the per-install Shadowbroker UA — the upstream
+# can identify us, rate-limit us per install, and contact us if needed.
+#
+# If the upstream actively blocks our honest UA, the feature degrades
+# gracefully (returns an empty list / cached results) rather than
+# escalating to deception.
+
+
+def _broadcastify_user_agent() -> str:
+    return outbound_user_agent("broadcastify")
+
+
+def _openmhz_user_agent() -> str:
+    return outbound_user_agent("openmhz")
 
 # Cache the top feeds for 5 minutes so we don't hammer Broadcastify
 radio_cache = TTLCache(maxsize=1, ttl=300)
@@ -22,8 +42,12 @@ def get_top_broadcastify_feeds():
     """
     logger.info("Scraping Broadcastify Top Feeds (Cache Miss)")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        # Issue #289 (tg12) + Round 7a: identify ourselves honestly as a
+        # per-install Shadowbroker scraper. Broadcastify can rate-limit
+        # us per install or block us; either way we stop pretending to be
+        # a browser. If they block, the panel degrades gracefully.
+        "User-Agent": _broadcastify_user_agent(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
 
@@ -89,21 +113,32 @@ openmhz_systems_cache = TTLCache(maxsize=1, ttl=3600)
 
 @cached(openmhz_systems_cache)
 def get_openmhz_systems():
-    """Fetches the full directory of OpenMHZ systems."""
-    logger.info("Scraping OpenMHZ Systems (Cache Miss)")
-    scraper = cloudscraper.create_scraper(
-        browser={"browser": "chrome", "platform": "windows", "desktop": True}
-    )
+    """Fetches the full directory of OpenMHZ systems.
 
+    Issue #290 (tg12) + Round 7a: replaced cloudscraper-based Chrome
+    impersonation with an honest per-install Shadowbroker User-Agent.
+    If OpenMHz's Cloudflare layer blocks honest traffic, we accept
+    that degradation (return empty list) rather than spoof a browser.
+    """
+    logger.info("Fetching OpenMHZ Systems (Cache Miss)")
     try:
-        res = scraper.get("https://api.openmhz.com/systems", timeout=15)
+        res = requests.get(
+            "https://api.openmhz.com/systems",
+            timeout=15,
+            headers={"User-Agent": _openmhz_user_agent(), "Accept": "application/json"},
+        )
         if res.status_code == 200:
             data = res.json()
-            # Return list of systems
             return data.get("systems", []) if isinstance(data, dict) else []
+        if res.status_code in (403, 503):
+            logger.warning(
+                "OpenMHZ returned %s for systems directory — Cloudflare may "
+                "be blocking our honest UA. Feature degrades to empty result.",
+                res.status_code,
+            )
         return []
     except (requests.RequestException, ConnectionError, TimeoutError, ValueError, KeyError) as e:
-        logger.error(f"OpenMHZ Systems Scrape Exception: {e}")
+        logger.error(f"OpenMHZ Systems Fetch Exception: {e}")
         return []
 
 
@@ -113,21 +148,25 @@ openmhz_calls_cache = TTLCache(maxsize=100, ttl=20)
 
 @cached(openmhz_calls_cache)
 def get_recent_openmhz_calls(sys_name: str):
-    """Fetches the actual audio burst .m4a URLs for a specific system (e.g., 'wmata')."""
-    logger.info(f"Fetching OpenMHZ calls for {sys_name} (Cache Miss)")
-    scraper = cloudscraper.create_scraper(
-        browser={"browser": "chrome", "platform": "windows", "desktop": True}
-    )
+    """Fetches the actual audio burst .m4a URLs for a specific system (e.g., 'wmata').
 
+    Issue #290 (tg12) + Round 7a: same honest-UA model as
+    ``get_openmhz_systems``.
+    """
+    logger.info(f"Fetching OpenMHZ calls for {sys_name} (Cache Miss)")
     try:
         url = f"https://api.openmhz.com/{sys_name}/calls"
-        res = scraper.get(url, timeout=15)
+        res = requests.get(
+            url,
+            timeout=15,
+            headers={"User-Agent": _openmhz_user_agent(), "Accept": "application/json"},
+        )
         if res.status_code == 200:
             data = res.json()
             return data.get("calls", []) if isinstance(data, dict) else []
         return []
     except (requests.RequestException, ConnectionError, TimeoutError, ValueError, KeyError) as e:
-        logger.error(f"OpenMHZ Calls Scrape Exception ({sys_name}): {e}")
+        logger.error(f"OpenMHZ Calls Fetch Exception ({sys_name}): {e}")
         return []
 
 
@@ -163,9 +202,11 @@ def openmhz_audio_response(target_url: str):
                 timeout=(5, 20),
                 allow_redirects=False,
                 headers={
-                    "User-Agent": "Mozilla/5.0",
+                    # Issue #291 (tg12) + Round 7a: drop spoofed Mozilla
+                    # UA and the fake first-party Referer. Identify as
+                    # the per-install Shadowbroker proxy honestly.
+                    "User-Agent": _openmhz_user_agent(),
                     "Accept": "audio/mpeg,audio/*,*/*;q=0.8",
-                    "Referer": "https://openmhz.com/",
                 },
             )
             if upstream.is_redirect or upstream.status_code in (301, 302, 303, 307, 308):

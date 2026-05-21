@@ -15,7 +15,11 @@ import time
 import heapq
 from datetime import datetime, timedelta
 from pathlib import Path
-from services.network_utils import external_curl_fallback_enabled, fetch_with_curl
+from services.network_utils import (
+    external_curl_fallback_enabled,
+    fetch_with_curl,
+    outbound_user_agent,
+)
 from services.fetchers._store import latest_data, _data_lock, _mark_fresh
 from services.fetchers.nuforc_enrichment import enrich_sighting
 from services.fetchers.retry import with_retry
@@ -279,13 +283,13 @@ def fetch_weather_alerts():
         return
     alerts = []
     try:
-        # weather.gov requires a User-Agent per their API policy, but it
-        # need not identify the operator. Use a project-generic string and
-        # let the user override via SHADOWBROKER_USER_AGENT if needed.
-        from services.network_utils import DEFAULT_USER_AGENT
+        # weather.gov requires a User-Agent per their API policy. Round 7a:
+        # send the per-install operator handle so they can rate-limit per
+        # operator instead of treating "Shadowbroker" as one entity.
+        from services.network_utils import outbound_user_agent
         url = "https://api.weather.gov/alerts/active?status=actual"
         headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
+            "User-Agent": outbound_user_agent("weather-gov"),
             "Accept": "application/geo+json",
         }
         response = fetch_with_curl(url, timeout=15, headers=headers)
@@ -713,7 +717,12 @@ _NUFORC_LIVE_NONCE_RE = re.compile(
     r'id=["\']wdtNonceFrontendServerSide_1["\'][^>]*value=["\']([a-f0-9]+)["\']'
 )
 _NUFORC_LIVE_SIGHTING_ID_RE = re.compile(r"id=(\d+)")
-_NUFORC_LIVE_USER_AGENT = "Mozilla/5.0 (ShadowBroker-OSINT NUFORC-fetcher)"
+# Round 7a: NUFORC's site is sensitive to non-browser UAs but we send a
+# per-install operator handle prefixed by Mozilla/5.0 so we're identifiable
+# without being aggregately blocked. Operators who want stricter privacy
+# can override the entire UA via SHADOWBROKER_USER_AGENT.
+def _nuforc_live_user_agent() -> str:
+    return f"Mozilla/5.0 ({outbound_user_agent('nuforc-live')})"
 _NUFORC_LIVE_SESSION_COOKIES = _NUFORC_DATA_DIR / "nuforc_session.cookies"
 
 # Sample grid covering continental US, Alaska, Hawaii, Canada, UK, Australia
@@ -957,7 +966,7 @@ def _photon_lookup(query: str) -> list[float] | None:
         res = fetch_with_curl(
             url,
             headers={
-                "User-Agent": "ShadowBroker-OSINT/1.0 (NUFORC-UAP-layer)",
+                "User-Agent": outbound_user_agent("nuforc-uap-geocode"),
                 "Accept-Language": "en",
             },
             timeout=10,
@@ -1053,7 +1062,7 @@ def _nuforc_fetch_month_live(yyyymm: str, cookie_jar: Path) -> list[dict]:
         index_res = subprocess.run(
             [
                 curl_bin, "-sL",
-                "-A", _NUFORC_LIVE_USER_AGENT,
+                "-A", _nuforc_live_user_agent(),
                 "-c", str(cookie_jar),
                 "-b", str(cookie_jar),
                 index_url,
@@ -1089,7 +1098,7 @@ def _nuforc_fetch_month_live(yyyymm: str, cookie_jar: Path) -> list[dict]:
         ajax_res = subprocess.run(
             [
                 curl_bin, "-sL",
-                "-A", _NUFORC_LIVE_USER_AGENT,
+                "-A", _nuforc_live_user_agent(),
                 "-c", str(cookie_jar),
                 "-b", str(cookie_jar),
                 "-X", "POST",

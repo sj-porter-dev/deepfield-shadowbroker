@@ -19,6 +19,13 @@ from pathlib import Path
 import requests
 from sgp4.api import Satrec, WGS72, jday
 
+
+
+def _tinygs_user_agent(purpose: str) -> str:
+    """Round 7a: per-install handle for CelesTrak / TinyGS attribution."""
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent(f"tinygs-{purpose}")
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -113,7 +120,7 @@ def _fetch_celestrak_tles() -> list[dict]:
                 params={"GROUP": group, "FORMAT": "json"},
                 timeout=20,
                 headers={
-                    "User-Agent": "ShadowBroker-OSINT/1.0 (CelesTrak fair-use)",
+                    "User-Agent": _tinygs_user_agent("celestrak"),
                     "Accept": "application/json",
                 },
             )
@@ -259,7 +266,7 @@ def _fetch_tinygs_telemetry() -> None:
             timeout=15,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "ShadowBroker-OSINT/1.0",
+                "User-Agent": _tinygs_user_agent("tinygs"),
             },
         )
         resp.raise_for_status()

@@ -24,7 +24,9 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 
 _FINNHUB_BASE = "https://finnhub.io/api/v1"
-_USER_AGENT = "ShadowBroker/0.9.79 Finnhub connector"
+def _finnhub_user_agent():
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("finnhub")
 _REQUEST_TIMEOUT = 12
 _MIN_INTERVAL_SECONDS = 0.35  # Stay well under 60 calls/min
 
@@ -89,7 +91,7 @@ def _request(path: str, params: dict[str, Any] | None = None) -> Any:
                 f"{_FINNHUB_BASE}{path}",
                 params=payload,
                 timeout=_REQUEST_TIMEOUT,
-                headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+                headers={"User-Agent": _finnhub_user_agent(), "Accept": "application/json"},
             )
         finally:
             _last_request_at = time.monotonic()

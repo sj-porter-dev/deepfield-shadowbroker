@@ -17,6 +17,12 @@ from typing import Any
 
 import requests
 
+
+
+def _route_db_user_agent() -> str:
+    from services.network_utils import outbound_user_agent
+    return outbound_user_agent("route-database")
+
 logger = logging.getLogger(__name__)
 
 _ROUTES_URL = "https://vrs-standing-data.adsb.lol/routes.csv.gz"
@@ -37,7 +43,7 @@ def _fetch_csv_gz(url: str) -> list[dict[str, str]]:
     response = requests.get(
         url,
         timeout=_HTTP_TIMEOUT_S,
-        headers={"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip"},
+        headers={"User-Agent": _route_db_user_agent(), "Accept-Encoding": "gzip"},
     )
     response.raise_for_status()
     text = gzip.decompress(response.content).decode("utf-8-sig")

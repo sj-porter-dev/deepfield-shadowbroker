@@ -8148,8 +8148,12 @@ def _cctv_proxy_profile_for_url(target_url: str) -> _CCTVProxyProfile:
 
 
 def _cctv_upstream_headers(request: Request, profile: _CCTVProxyProfile) -> dict[str, str]:
+    # Round 7a: per-install operator handle. See routers/cctv.py for the
+    # canonical handler; this duplicate stays in lockstep until the #239
+    # dedup ladder removes it.
+    from services.network_utils import outbound_user_agent
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; ShadowBroker CCTV proxy)",
+        "User-Agent": f"Mozilla/5.0 (compatible; {outbound_user_agent('cctv-proxy')})",
         **profile.headers,
     }
     range_header = request.headers.get("range")

@@ -165,7 +165,13 @@ def _cctv_proxy_profile_for_url(target_url: str) -> _CCTVProxyProfile:
 
 
 def _cctv_upstream_headers(request: Request, profile: _CCTVProxyProfile) -> dict:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; ShadowBroker CCTV proxy)", **profile.headers}
+    # Round 7a: per-install operator handle. Mozilla/5.0 prefix retained
+    # because many CCTV endpoints sniff for a browser-like prefix.
+    from services.network_utils import outbound_user_agent
+    headers = {
+        "User-Agent": f"Mozilla/5.0 (compatible; {outbound_user_agent('cctv-proxy')})",
+        **profile.headers,
+    }
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header

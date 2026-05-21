@@ -191,8 +191,13 @@ def fetch_meshtastic_nodes():
         _os.environ.get("MESHTASTIC_SEND_CALLSIGN_HEADER", "true")
     ).strip().lower() not in {"0", "false", "no", "off", ""}
 
-    from services.network_utils import DEFAULT_USER_AGENT
-    ua_base = f"{DEFAULT_USER_AGENT}; 24h polling"
+    # Round 7a: outbound_user_agent already includes the per-install handle.
+    # The optional Meshtastic callsign is appended as additional context so
+    # meshtastic.liamcottle.net's operator can identify both the install AND
+    # the registered radio operator (when MESHTASTIC_OPERATOR_CALLSIGN is set
+    # and MESHTASTIC_SEND_CALLSIGN_HEADER is true; see issue #203).
+    from services.network_utils import outbound_user_agent
+    ua_base = f"{outbound_user_agent('meshtastic-map')}; 24h polling"
     if callsign and send_callsign_header:
         user_agent = f"{ua_base}; node={callsign}"
     else:

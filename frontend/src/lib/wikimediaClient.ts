@@ -1,50 +1,36 @@
 /**
  * wikimediaClient — single fetch surface for Wikipedia / Wikidata.
  *
- * Issues #218, #219, #220 (tg12 external audit):
+ * Issues #218, #219, #220 (tg12 external audit) + Round 7a:
  *
  * Wikimedia's User-Agent policy asks API clients to identify themselves
  * via `Api-User-Agent` when calling from browser JavaScript (because the
- * browser does not let JS set `User-Agent` directly). Before this
- * module existed, three independent components issued anonymous browser
- * fetches against Wikipedia / Wikidata:
+ * browser does not let JS set `User-Agent` directly). Three independent
+ * components used to issue anonymous browser fetches against Wikipedia /
+ * Wikidata:
  *
  *   - useRegionDossier  (Wikidata SPARQL + Wikipedia REST summary)
  *   - WikiImage          (Wikipedia REST summary)
  *   - NewsFeed           (Wikipedia REST summary)
  *
- * Each component shipped its own copy-pasted fetch + module-local cache.
- * Provider-policy compliance was missing in all three places.
+ * PR #284 collapsed them into this shared helper with one stable
+ * `Api-User-Agent`. That fixed compliance but introduced a new problem:
+ * the `Api-User-Agent` was project-wide, so from Wikimedia's perspective
+ * every Shadowbroker install looked like one giant scraper. If one
+ * install misbehaved, Wikimedia's only recourse was to block the project
+ * as a whole.
  *
- * This module centralizes:
+ * Round 7a fixes that. The frontend fetches the per-install operator
+ * handle from `GET /api/settings/operator-handle` once on first use and
+ * embeds it in the `Api-User-Agent`. Wikimedia can now rate-limit /
+ * contact the specific install instead of the project. The handle is
+ * auto-generated on the backend (`shadow-XXXXXX`) or operator-chosen via
+ * the `OPERATOR_HANDLE` setting.
  *
- *   1. The `Api-User-Agent` header on every request.
- *   2. A single LRU cache for Wikipedia summary lookups (keyed by article
- *      title).  Multiple components asking for the same article share
- *      one in-flight request and one cache slot.
- *   3. One predictable kill switch — if Wikimedia ever asks us to back
- *      off, we change `WIKIMEDIA_API_USER_AGENT` here and the whole
- *      frontend updates.
- *
- * This does NOT change end-user UX:
- *
- *   - WikiImage still shows the same thumbnails.
- *   - NewsFeed still shows aircraft thumbnails.
- *   - useRegionDossier still returns the same place summary + leader.
- *
- * What changes:
- *
- *   - Wikimedia can identify our traffic from any other anonymous
- *     browser visitor pool.
- *   - Provider-policy fixes happen here once, not in three places.
+ * UX impact: zero. Same thumbnails, same summaries, same load behavior.
+ * The only observable change is the value of the outgoing
+ * `Api-User-Agent` header.
  */
-
-// Stable identifier per Wikimedia UA policy. Includes a contact path so
-// Wikimedia's operators can reach the project if they need to rate-limit
-// or coordinate. Bump the version when the contact path changes.
-export const WIKIMEDIA_API_USER_AGENT =
-  'Shadowbroker/1.0 (+https://github.com/BigBodyCobain/Shadowbroker; ' +
-  'report issues at /issues)';
 
 // Module-level cache shared by WikiImage, NewsFeed, and useRegionDossier.
 // Keyed by Wikipedia article title (NOT slug — we keep the human-readable
@@ -73,6 +59,66 @@ function evictIfOverCap() {
   if (oldest) _summaryCache.delete(oldest);
 }
 
+// ─── Per-operator handle (Round 7a) ────────────────────────────────────────
+
+// Fetched once from the backend on first need and cached for the page
+// lifetime. The handle is NOT a secret — Wikimedia will see it on every
+// Wikipedia / Wikidata request we make — but caching it locally avoids a
+// round-trip on every Wikipedia fetch and lets the offline / no-backend
+// case still produce a stable UA (the fallback handle).
+let _handlePromise: Promise<string> | null = null;
+let _cachedHandle: string | null = null;
+
+const FALLBACK_HANDLE = 'operator-offline';
+const HANDLE_ENDPOINT = '/api/settings/operator-handle';
+
+async function fetchOperatorHandle(): Promise<string> {
+  try {
+    const res = await fetch(HANDLE_ENDPOINT, {
+      // Use the standard relative-path proxy so the Next.js admin-key
+      // injection (same-origin) flows naturally for legitimate browser
+      // sessions. A cross-origin scanner will be blocked by the proxy
+      // before this even leaves their browser.
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return FALLBACK_HANDLE;
+    const data = await res.json();
+    const h = (data && typeof data.handle === 'string' && data.handle.trim()) || '';
+    return h || FALLBACK_HANDLE;
+  } catch {
+    return FALLBACK_HANDLE;
+  }
+}
+
+async function getOperatorHandle(): Promise<string> {
+  if (_cachedHandle) return _cachedHandle;
+  if (!_handlePromise) {
+    _handlePromise = fetchOperatorHandle().then((h) => {
+      _cachedHandle = h;
+      return h;
+    });
+  }
+  return _handlePromise;
+}
+
+/** Build the Wikimedia Api-User-Agent for this install.
+ *
+ * Includes the per-install operator handle so Wikimedia can rate-limit /
+ * contact the specific operator instead of the project as a whole.
+ * Exported for tests; production callers should let
+ * `fetchWikipediaSummary` / `fetchWikidataSparql` build it implicitly.
+ */
+export async function buildWikimediaUserAgent(purpose: string): Promise<string> {
+  const handle = await getOperatorHandle();
+  const safePurpose = (purpose || '').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+  return (
+    `Shadowbroker/1.0 (operator: ${handle}; purpose: ${safePurpose}; ` +
+    '+https://github.com/BigBodyCobain/Shadowbroker; report issues at /issues)'
+  );
+}
+
+// ─── Wikipedia summary fetch ───────────────────────────────────────────────
+
 /** Fetch a Wikipedia article summary (titles, NOT URLs).
  *
  * Empty / invalid input resolves to `null`. Network errors and disambig
@@ -92,40 +138,42 @@ export async function fetchWikipediaSummary(
   const slug = encodeURIComponent(trimmed.replace(/ /g, '_'));
   const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${slug}`;
 
-  const promise = fetch(url, {
-    headers: { 'Api-User-Agent': WIKIMEDIA_API_USER_AGENT },
-  })
-    .then(async (r) => {
+  const promise = (async (): Promise<WikipediaSummary | null> => {
+    try {
+      const ua = await buildWikimediaUserAgent('wikipedia-summary');
+      const r = await fetch(url, { headers: { 'Api-User-Agent': ua } });
       if (!r.ok) return null;
       const d = await r.json();
       if (d?.type === 'disambiguation') return null;
-      const summary: WikipediaSummary = {
+      return {
         title: trimmed,
         description: d?.description || '',
         extract: d?.extract || '',
         thumbnail: d?.thumbnail?.source || d?.originalimage?.source || '',
         type: d?.type || 'standard',
       };
-      return summary;
-    })
-    .catch(() => null)
-    .then((summary) => {
-      _summaryCache.set(trimmed, { summary, inflight: null, loaded: true });
-      evictIfOverCap();
-      return summary;
-    });
+    } catch {
+      return null;
+    }
+  })().then((summary) => {
+    _summaryCache.set(trimmed, { summary, inflight: null, loaded: true });
+    evictIfOverCap();
+    return summary;
+  });
 
   _summaryCache.set(trimmed, { summary: null, inflight: promise, loaded: false });
   evictIfOverCap();
   return promise;
 }
 
+// ─── Wikidata SPARQL ───────────────────────────────────────────────────────
+
 /** Fetch a Wikidata SPARQL query result.
  *
  * Returns the parsed JSON `results.bindings` array on success; `null`
  * (not throwing) on any failure so callers can render fallbacks
- * silently. Kept as a thin wrapper so the audit-required UA header is
- * applied in exactly one place.
+ * silently. Per-install operator handle threaded through `Api-User-Agent`
+ * (Round 7a).
  */
 export async function fetchWikidataSparql<T = Record<string, { value: string }>>(
   sparql: string,
@@ -136,9 +184,10 @@ export async function fetchWikidataSparql<T = Record<string, { value: string }>>
     trimmed,
   )}&format=json`;
   try {
+    const ua = await buildWikimediaUserAgent('wikidata-sparql');
     const res = await fetch(url, {
       headers: {
-        'Api-User-Agent': WIKIMEDIA_API_USER_AGENT,
+        'Api-User-Agent': ua,
         Accept: 'application/sparql-results+json',
       },
     });
@@ -151,7 +200,11 @@ export async function fetchWikidataSparql<T = Record<string, { value: string }>>
   }
 }
 
-/** Internal: clear the shared cache. Exposed for tests only. */
+// ─── Test helpers ──────────────────────────────────────────────────────────
+
+/** Internal: clear the shared cache + the handle cache. Exposed for tests only. */
 export function _resetWikimediaClientCacheForTests() {
   _summaryCache.clear();
+  _handlePromise = null;
+  _cachedHandle = null;
 }
