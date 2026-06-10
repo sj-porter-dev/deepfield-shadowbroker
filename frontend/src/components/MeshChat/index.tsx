@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import AgentShellPanel from './AgentShellPanel';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -13,6 +13,7 @@ import {
   Radio,
   Shield,
   Terminal,
+  SquareTerminal,
   UserPlus,
   Lock,
   Check,
@@ -91,6 +92,7 @@ function describeGateCompatReason(reason: string, gateId: string): string {
 
 const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
   const panelBoxRef = useRef<HTMLDivElement>(null);
+  const [shellExpanded, setShellExpanded] = useState(false);
   const ctrl = useMeshChatController(props);
   const {
     // UI state
@@ -319,6 +321,12 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
     recentPrivateFallbackReason,
     onSettingsClick,
   } = ctrl;
+
+  useEffect(() => {
+    if (activeTab !== 'dms') {
+      setShellExpanded(false);
+    }
+  }, [activeTab]);
   const selectedContactTrustSummary = selectedContactInfo
     ? getContactTrustSummary(selectedContactInfo)
     : null;
@@ -401,7 +409,11 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
       {/* Single unified box — matches Data Layers panel skin */}
       <div
         ref={panelBoxRef}
-        className={`bg-[#0a0a0a]/90 backdrop-blur-sm border border-cyan-900/40 flex flex-col relative overflow-hidden`}
+        className={`bg-[#0a0a0a]/90 backdrop-blur-sm border border-cyan-900/40 flex flex-col relative overflow-hidden transition-[width,min-width] duration-200 ${
+          activeTab === 'dms' && shellExpanded
+            ? 'z-[210] min-w-[min(760px,calc(100vw-3rem))] w-[min(760px,calc(100vw-3rem))]'
+            : ''
+        }`}
         style={{ boxShadow: '0 0 15px rgba(8,145,178,0.06), inset 0 0 20px rgba(0,0,0,0.4)', ...(expanded ? { flex: '1 1 0', minHeight: 0 } : {}) }}
       >
         {/* HEADER */}
@@ -438,8 +450,8 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
                 { key: 'meshtastic' as Tab, label: 'MESH', icon: <Radio size={10} />, badge: 0 },
                 {
                   key: 'dms' as Tab,
-                  label: 'AGENT SHELL',
-                  icon: <Terminal size={10} />,
+                  label: 'SHELL',
+                  icon: <SquareTerminal size={10} />,
                   badge: 0,
                 },
               ].map((tab) => (
@@ -480,21 +492,21 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
               </div>
             )}
 
-            {activeTab !== 'meshtastic' && wormholeEnabled && !wormholeReadyState && (
+            {activeTab !== 'dms' && activeTab !== 'meshtastic' && wormholeEnabled && !wormholeReadyState && (
               <div className="px-3 py-2 text-sm font-mono text-red-400/90 border-b border-red-900/30 bg-red-950/20 leading-[1.65] shrink-0">
                 Wormhole secure mode is enabled but the local agent is not ready. Dead Drop is
                 blocked until Wormhole is running.
               </div>
             )}
 
-            {activeTab !== 'meshtastic' && wormholeEnabled && wormholeReadyState && (
+            {activeTab !== 'dms' && activeTab !== 'meshtastic' && wormholeEnabled && wormholeReadyState && (
               <div className="px-3 py-2 text-sm font-mono text-yellow-400/80 border-b border-yellow-900/20 bg-yellow-950/10 leading-[1.65] shrink-0">
                 Wormhole secure mode is active. Experimental private-lane operations are routed
                 through the local agent and current secure transport paths.
               </div>
             )}
 
-            {activeTab !== 'meshtastic' && wormholeEnabled && wormholeReadyState && !wormholeRnsReady && (
+            {activeTab !== 'dms' && activeTab !== 'meshtastic' && wormholeEnabled && wormholeReadyState && !wormholeRnsReady && (
               <div className="px-3 py-2 text-sm font-mono text-amber-300/90 border-b border-amber-900/30 bg-amber-950/20 leading-[1.65] shrink-0">
                 TRANSITIONAL PRIVATE LANE. Wormhole is up and gate chat is available on the
                 transitional lane. Reticulum is still warming — Dead Drop / DM requires the
@@ -502,7 +514,7 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
               </div>
             )}
 
-            {activeTab !== 'meshtastic' && anonymousModeEnabled && !anonymousModeReady && (
+            {activeTab !== 'dms' && activeTab !== 'meshtastic' && anonymousModeEnabled && !anonymousModeReady && (
               <div className="px-3 py-2 text-sm font-mono text-red-400/90 border-b border-red-900/30 bg-red-950/20 leading-[1.65] shrink-0">
                 Anonymous mode is active, but hidden transport is not ready. Dead Drop is blocked
                 until Wormhole is running over Tor, I2P, or Mixnet.
@@ -545,8 +557,9 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
             <div className="flex-1 overflow-hidden flex flex-col min-h-0">
               {activeTab === 'dms' && (
                 <AgentShellPanel
-                  anchorRef={panelBoxRef}
                   active={expanded && activeTab === 'dms'}
+                  expanded={shellExpanded}
+                  onExpandedChange={setShellExpanded}
                 />
               )}
               {dashboardRestrictedTab && (
@@ -1502,7 +1515,7 @@ const MeshChat = React.memo(function MeshChat(props: MeshChatProps) {
                   SHELL
                 </span>
                 <div className="px-3 py-2.5 text-[13px] font-mono text-[var(--text-secondary)] leading-relaxed">
-                  Local bash/cmd launches here (desktop). Set your own working directory in Settings.
+                  Real local shell over PTY. EXPAND widens this panel; SNAP docks it back into Mesh Chat.
                 </div>
               </div>
             ) : dashboardRestrictedTab ? (

@@ -370,6 +370,7 @@ osint_router = _load_optional_router("routers.osint")
 scm_router = _load_optional_router("routers.scm")
 entity_graph_router = _load_optional_router("routers.entity_graph")
 intel_feeds_router = _load_optional_router("routers.intel_feeds")
+agent_shell_router = _load_optional_router("routers.agent_shell")
 
 
 # ---------------------------------------------------------------------------
@@ -3651,6 +3652,7 @@ app.include_router(osint_router)
 app.include_router(scm_router)
 app.include_router(entity_graph_router)
 app.include_router(intel_feeds_router)
+app.include_router(agent_shell_router)
 
 from services.data_fetcher import update_all_data
 

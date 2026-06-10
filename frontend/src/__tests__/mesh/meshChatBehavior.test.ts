@@ -127,7 +127,7 @@ describe('MeshChat behavior - policy wiring', () => {
   it('MeshChat Agent Shell tab keeps legacy dm-add guidance in MeshTerminal', () => {
     const index = readSource('../../components/MeshChat/index.tsx');
     expect(index).toContain('AgentShellPanel');
-    expect(index).toContain('AGENT SHELL');
+    expect(index).toContain('SHELL');
     expect(index).not.toContain('handleAddContact().catch(() =>');
     const terminal = readSource('../../components/MeshTerminal.tsx');
     expect(terminal).toContain('dm add');
