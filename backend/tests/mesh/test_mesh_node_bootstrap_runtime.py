@@ -402,6 +402,57 @@ def test_public_sync_cycle_allows_first_node_without_peers(tmp_path, monkeypatch
     assert result.consecutive_failures == 0
 
 
+def test_sync_from_peer_explains_stale_genesis_chain(monkeypatch):
+    import main
+    from services.mesh import mesh_hashchain
+
+    class FakeInfonet:
+        events = []
+        head_hash = mesh_hashchain.GENESIS_HASH
+
+        def get_locator(self):
+            return [mesh_hashchain.GENESIS_HASH]
+
+        def ingest_events(self, events):
+            return {
+                "accepted": 0,
+                "duplicates": 0,
+                "rejected": [
+                    {"index": 0, "reason": "Event timestamp outside freshness window"},
+                    {"index": 1, "reason": "prev_hash does not match head"},
+                ],
+            }
+
+    stale_events = [
+        {
+            "event_id": "old-1",
+            "prev_hash": mesh_hashchain.GENESIS_HASH,
+            "event_type": "message",
+            "timestamp": 1,
+        },
+        {
+            "event_id": "old-2",
+            "prev_hash": "old-1",
+            "event_type": "message",
+            "timestamp": 2,
+        },
+    ]
+
+    monkeypatch.setattr(mesh_hashchain, "infonet", FakeInfonet())
+    monkeypatch.setattr(main, "_peer_sync_response", lambda *_args, **_kwargs: {"events": stale_events})
+    monkeypatch.setattr(main, "_hydrate_gate_store_from_chain", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "_hydrate_dm_relay_from_chain", lambda *_args, **_kwargs: None)
+
+    ok, error, forked, retry_after_s = main._sync_from_peer("https://node.shadowbroker.info")
+
+    assert ok is False
+    assert forked is False
+    assert retry_after_s == 0
+    assert "Event timestamp outside freshness window" in error
+    assert "expired genesis chain" in error
+    assert "MESH_INGEST_EVENT_MAX_AGE_S=0" in error
+
+
 def test_headless_mesh_node_runtime_is_explicit(monkeypatch):
     import main
 

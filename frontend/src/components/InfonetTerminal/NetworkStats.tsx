@@ -92,7 +92,7 @@ export default function NetworkStats() {
       <span className="text-gray-700">|</span>
       <span>EVENTS <span className="text-white">{stats.infonetEvents}</span></span>
       <span className="text-gray-700">|</span>
-      <span title="Configured peers this node pulls from. Usually this is just the seed unless another device is added as a sync peer.">
+      <span title="Peers this node syncs from (seed + swarm-discovered participants).">
         SYNC PEERS <span className="text-white">{stats.syncPeers}</span>
       </span>
       {stats.seedPeers > stats.syncPeers ? (

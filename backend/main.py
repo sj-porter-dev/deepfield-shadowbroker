@@ -244,6 +244,7 @@ from services.mesh.mesh_protocol import (
     PROTOCOL_VERSION,
     normalize_payload,
 )
+from services.mesh.mesh_hashchain import GENESIS_HASH
 from services.mesh.mesh_signed_events import (
     MeshWriteExemption,
     SignedWriteKind,
@@ -324,6 +325,7 @@ from auth import (
     _validate_insecure_admin_startup,
     _validate_peer_push_secret,
     _verify_peer_push_hmac,
+    _verify_peer_transport_hmac,
 )
 from node_state import (
     _NODE_BOOTSTRAP_STATE,
@@ -1275,6 +1277,7 @@ def _ensure_infonet_private_transport_ready(reason: str = "") -> bool:
             get_settings.cache_clear()
             if _check_arti_ready():
                 logger.info("Infonet private transport ready%s", label)
+                threading.Thread(target=_swarm_bootstrap_after_transport_ready, daemon=True).start()
                 return True
         logger.warning("Infonet private transport warmup incomplete%s: %s", label, tor_result)
         return False
@@ -1416,6 +1419,16 @@ def _refresh_node_peer_store(*, now: float | None = None) -> dict[str, Any]:
     if private_transport_required and skipped_clearnet_peers and not bootstrap_error:
         bootstrap_error = _infonet_private_transport_error()
 
+    swarm_pull: dict[str, Any] = {}
+    try:
+        from services.mesh.mesh_swarm_runtime import refresh_swarm_manifest_from_seeds
+
+        swarm_pull = refresh_swarm_manifest_from_seeds(now=timestamp)
+        if swarm_pull.get("ok") and not swarm_pull.get("skipped"):
+            store.load()
+    except Exception as exc:
+        swarm_pull = {"ok": False, "detail": str(exc or type(exc).__name__)}
+
     store.save()
     bootstrap_records = store.records_for_bucket("bootstrap")
     sync_records = store.records_for_bucket("sync")
@@ -1424,6 +1437,8 @@ def _refresh_node_peer_store(*, now: float | None = None) -> dict[str, Any]:
         bootstrap_records = [record for record in bootstrap_records if _is_private_infonet_transport(record.transport)]
         sync_records = [record for record in sync_records if _is_private_infonet_transport(record.transport)]
         push_records = [record for record in push_records if _is_private_infonet_transport(record.transport)]
+    swarm_sync_peer_count = len([record for record in sync_records if str(record.source or "") == "swarm"])
+    swarm_push_peer_count = len([record for record in push_records if str(record.source or "") == "swarm"])
     snapshot = {
         "node_mode": mode,
         "private_transport_required": private_transport_required,
@@ -1435,14 +1450,28 @@ def _refresh_node_peer_store(*, now: float | None = None) -> dict[str, Any]:
         "bootstrap_peer_count": len(bootstrap_records),
         "sync_peer_count": len(sync_records),
         "push_peer_count": len(push_records),
+        "swarm_sync_peer_count": swarm_sync_peer_count,
+        "swarm_push_peer_count": swarm_push_peer_count,
         "operator_peer_count": len(operator_peers),
         "bootstrap_seed_peer_count": len(bootstrap_seed_peers),
         "default_sync_peer_count": len(bootstrap_seed_peers),
         "last_bootstrap_error": bootstrap_error,
+        "swarm_manifest_pull": swarm_pull,
     }
     with _NODE_RUNTIME_LOCK:
         _NODE_BOOTSTRAP_STATE.update(snapshot)
     return snapshot
+
+
+def _swarm_bootstrap_after_transport_ready() -> None:
+    try:
+        from services.mesh.mesh_swarm_runtime import announce_local_peer_to_seeds, refresh_swarm_manifest_from_seeds
+
+        announce_local_peer_to_seeds(force=True)
+        refresh_swarm_manifest_from_seeds(force=True)
+        _refresh_node_peer_store()
+    except Exception:
+        logger.warning("swarm bootstrap after transport ready failed", exc_info=True)
 
 
 def _materialize_local_infonet_state() -> None:
@@ -1669,7 +1698,29 @@ def _sync_from_peer(
         _hydrate_dm_relay_from_chain(events)
         rejected = list(result.get("rejected", []) or [])
         if rejected:
-            return False, f"sync ingest rejected {len(rejected)} event(s)", False, 0
+            reasons = [
+                str((item or {}).get("reason", "") or "").strip()
+                for item in rejected
+                if isinstance(item, dict)
+            ]
+            reason_summary = ", ".join(reason for reason in reasons if reason)
+            detail = f"sync ingest rejected {len(rejected)} event(s)"
+            if reason_summary:
+                detail = f"{detail}: {reason_summary}"
+            local_empty = len(infonet.events) == 0
+            stale_genesis = (
+                local_empty
+                and bool(events)
+                and str((events[0] or {}).get("prev_hash", "") or "") == GENESIS_HASH
+                and any("timestamp outside freshness window" in reason.lower() for reason in reasons)
+            )
+            if stale_genesis:
+                detail = (
+                    f"{detail}; peer appears to be serving an expired genesis chain. "
+                    "Refresh or reset the peer chain, or perform an explicit one-time migration "
+                    "with MESH_INGEST_EVENT_MAX_AGE_S=0."
+                )
+            return False, detail, False, 0
         if int(result.get("accepted", 0) or 0) == 0 and int(result.get("duplicates", 0) or 0) >= len(events):
             return True, "", False, 0
         if len(events) < page_limit:
@@ -1922,9 +1973,22 @@ def _propagate_public_event_to_peers(event_dict: dict[str, Any]) -> None:
     )
 
 
+def _propagate_ledger_event_to_peers(event_dict: dict[str, Any]) -> None:
+    if not _participant_node_enabled():
+        return
+    event_type = str(event_dict.get("event_type") or "")
+    if event_type in {"gate_message", "dm_message"}:
+        from services.mesh.mesh_swarm_runtime import push_infonet_events_to_http_peers
+
+        push_infonet_events_to_http_peers([event_dict])
+        _kick_public_sync_background("ledger_event")
+        return
+    _propagate_public_event_to_peers(event_dict)
+
+
 def _schedule_public_event_propagation(event_dict: dict[str, Any]) -> None:
     threading.Thread(
-        target=_propagate_public_event_to_peers,
+        target=_propagate_ledger_event_to_peers,
         args=(dict(event_dict),),
         daemon=True,
     ).start()
@@ -1960,6 +2024,7 @@ def _start_infonet_node_runtime(reason: str = "startup") -> None:
                 threading.Thread(target=_http_peer_push_loop, daemon=True).start()
                 threading.Thread(target=_http_gate_push_loop, daemon=True).start()
                 threading.Thread(target=_http_gate_pull_loop, daemon=True).start()
+                threading.Thread(target=_swarm_manifest_pull_loop, daemon=True).start()
                 _NODE_RUNTIME_THREADS_STARTED = True
             _kick_public_sync_background(reason)
         if not _NODE_PUBLIC_EVENT_HOOK_REGISTERED:
@@ -2065,6 +2130,22 @@ def _http_peer_push_loop() -> None:
         except Exception:
             logger.exception("HTTP peer push loop error")
         _NODE_SYNC_STOP.wait(_PEER_PUSH_INTERVAL_S)
+
+
+def _swarm_manifest_pull_loop() -> None:
+    """Background thread: pull signed peer manifests from bootstrap seeds."""
+    while not _NODE_SYNC_STOP.is_set():
+        try:
+            if _participant_node_enabled():
+                from services.mesh.mesh_swarm_runtime import refresh_swarm_manifest_from_seeds
+
+                result = refresh_swarm_manifest_from_seeds()
+                if result.get("ok") and not result.get("skipped"):
+                    _refresh_node_peer_store()
+        except Exception:
+            logger.exception("swarm manifest pull loop error")
+        interval_s = int(getattr(get_settings(), "MESH_SWARM_MANIFEST_PULL_INTERVAL_S", 0) or 300)
+        _NODE_SYNC_STOP.wait(max(30, interval_s))
 
 
 # â”€â”€â”€ Background Gate Message Pull Worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -5497,6 +5578,65 @@ async def infonet_ingest(request: Request):
     return {"ok": True, **result}
 
 
+@app.get("/api/mesh/infonet/peer-registry", dependencies=[Depends(require_local_operator)])
+@limiter.limit("30/minute")
+async def infonet_peer_registry(request: Request):
+    """Operator view of the live swarm peer registry (seed nodes only)."""
+    from services.mesh.mesh_peer_registry import DEFAULT_PEER_REGISTRY_PATH, PeerRegistry
+    from services.mesh.mesh_swarm_runtime import peer_registry_enabled
+
+    if not peer_registry_enabled():
+        return {"ok": False, "detail": "peer registry is not enabled on this node"}
+    registry = PeerRegistry(DEFAULT_PEER_REGISTRY_PATH)
+    try:
+        peers = registry.load()
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc or type(exc).__name__)}
+    return {
+        "ok": True,
+        "peer_count": len(peers),
+        "peers": [peer.to_dict() for peer in peers],
+    }
+
+
+@app.get("/api/mesh/infonet/bootstrap-manifest")
+@limiter.limit(_INFONET_SYNC_RATE_LIMIT)
+async def infonet_bootstrap_manifest(request: Request):
+    """Return the current signed bootstrap/swarm peer manifest."""
+    from services.mesh.mesh_swarm_runtime import load_live_bootstrap_manifest
+
+    manifest = load_live_bootstrap_manifest()
+    if manifest is None:
+        return {"ok": False, "detail": "bootstrap manifest unavailable"}
+    return {"ok": True, "manifest": manifest.to_dict()}
+
+
+@app.post("/api/mesh/infonet/peer-announce")
+@limiter.limit("30/minute")
+@mesh_write_exempt(MeshWriteExemption.PEER_GOSSIP)
+async def infonet_peer_announce(request: Request):
+    """Register a participant onion peer in the swarm registry (HMAC-authenticated)."""
+    from auth import _peer_hmac_url_from_request
+    from services.mesh.mesh_swarm_runtime import peer_registry_enabled, record_peer_announcement
+
+    body_bytes = await request.body()
+    if not _verify_peer_transport_hmac(request, body_bytes):
+        return Response(
+            content='{"ok":false,"detail":"Invalid or missing peer HMAC"}',
+            status_code=403,
+            media_type="application/json",
+        )
+    if not peer_registry_enabled():
+        return {"ok": False, "detail": "peer registry is not enabled on this node"}
+    body = json_mod.loads(body_bytes or b"{}")
+    announced_url = normalize_peer_url(str(body.get("peer_url", "") or ""))
+    header_url = _peer_hmac_url_from_request(request)
+    if not announced_url or announced_url != header_url:
+        return {"ok": False, "detail": "peer_url must match X-Peer-Url"}
+    peer = record_peer_announcement(body)
+    return {"ok": True, "peer_url": peer.peer_url, "role": peer.role, "transport": peer.transport}
+
+
 @app.post("/api/mesh/infonet/peer-push")
 @limiter.limit("30/minute")
 @mesh_write_exempt(MeshWriteExemption.PEER_GOSSIP)
@@ -5535,6 +5675,8 @@ async def infonet_peer_push(request: Request):
     result = infonet.ingest_events(events)
     _hydrate_gate_store_from_chain(events)
     _hydrate_dm_relay_from_chain(events)
+    if any(str(event.get("event_type") or "") in {"gate_message", "dm_message"} for event in events):
+        _kick_public_sync_background("peer_push_ingest")
     return {"ok": True, **result}
 
 

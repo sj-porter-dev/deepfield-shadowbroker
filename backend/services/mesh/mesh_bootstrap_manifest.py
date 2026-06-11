@@ -287,6 +287,34 @@ def write_signed_bootstrap_manifest(
     return manifest
 
 
+def parse_bootstrap_manifest_dict(
+    raw: dict[str, Any],
+    *,
+    signer_public_key_b64: str,
+    now: float | None = None,
+) -> BootstrapManifest:
+    if not isinstance(raw, dict):
+        raise BootstrapManifestError("bootstrap manifest root must be an object")
+    signature = str(raw.get("signature", "") or "").strip()
+    payload = {key: value for key, value in raw.items() if key != "signature"}
+    if not signature:
+        raise BootstrapManifestError("bootstrap manifest signature is required")
+    _verify_manifest_signature(
+        payload,
+        signature_b64=signature,
+        signer_public_key_b64=signer_public_key_b64,
+    )
+    manifest = _validate_bootstrap_manifest_payload(payload, now=now)
+    return BootstrapManifest(
+        version=manifest.version,
+        issued_at=manifest.issued_at,
+        valid_until=manifest.valid_until,
+        signer_id=manifest.signer_id,
+        peers=manifest.peers,
+        signature=signature,
+    )
+
+
 def load_bootstrap_manifest(
     path: str | Path,
     *,
@@ -303,25 +331,10 @@ def load_bootstrap_manifest(
 
     if not isinstance(raw, dict):
         raise BootstrapManifestError("bootstrap manifest root must be an object")
-
-    signature = str(raw.get("signature", "") or "").strip()
-    payload = {key: value for key, value in raw.items() if key != "signature"}
-    if not signature:
-        raise BootstrapManifestError("bootstrap manifest signature is required")
-
-    _verify_manifest_signature(
-        payload,
-        signature_b64=signature,
+    return parse_bootstrap_manifest_dict(
+        raw,
         signer_public_key_b64=signer_public_key_b64,
-    )
-    manifest = _validate_bootstrap_manifest_payload(payload, now=now)
-    return BootstrapManifest(
-        version=manifest.version,
-        issued_at=manifest.issued_at,
-        valid_until=manifest.valid_until,
-        signer_id=manifest.signer_id,
-        peers=manifest.peers,
-        signature=signature,
+        now=now,
     )
 
 

@@ -1404,6 +1404,27 @@ def _peer_hmac_url_from_request(request: Request) -> str:
     return ""
 
 
+def _verify_peer_transport_hmac(request: Request, body_bytes: bytes) -> bool:
+    """Verify HMAC-SHA256 peer authentication without an allowlist check."""
+    provided = str(request.headers.get("x-peer-hmac", "") or "").strip()
+    if not provided:
+        return False
+
+    peer_url = _peer_hmac_url_from_request(request)
+    if not peer_url:
+        return False
+    peer_key = resolve_peer_key_for_url(peer_url)
+    if not peer_key:
+        return False
+
+    expected = _hmac_mod.new(
+        peer_key,
+        body_bytes,
+        _hashlib_mod.sha256,
+    ).hexdigest()
+    return _hmac_mod.compare_digest(provided.lower(), expected.lower())
+
+
 def _verify_peer_push_hmac(request: Request, body_bytes: bytes) -> bool:
     """Verify HMAC-SHA256 peer authentication on push requests.
 

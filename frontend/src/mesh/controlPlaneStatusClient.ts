@@ -25,6 +25,17 @@ export interface InfonetBootstrapSnapshot {
   bootstrap_seed_peer_count?: number;
   default_sync_peer_count?: number;
   last_bootstrap_error?: string;
+  swarm_sync_peer_count?: number;
+  swarm_push_peer_count?: number;
+  swarm_manifest_pull?: {
+    ok?: boolean;
+    skipped?: boolean;
+    reason?: string;
+    detail?: string;
+    peer_count?: number;
+    merged_peer_count?: number;
+    seed_peer_url?: string;
+  };
 }
 
 export interface InfonetSyncRuntimeSnapshot {
