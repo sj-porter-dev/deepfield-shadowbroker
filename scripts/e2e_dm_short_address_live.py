@@ -2529,18 +2529,77 @@ print(json.dumps({{
         return {"ok": False, "detail": str(exc) or type(exc).__name__}
 
 
+def _direct_tor_prekey_lookup(handle: str, lookup_peer_url: str) -> dict:
+    """Fetch invite-scoped prekey over Tor without blocking local uvicorn on /dm/pubkey."""
+    peer = str(lookup_peer_url or "").strip().rstrip("/")
+    if not peer:
+        peer = f"http://{PETE_ONION}".rstrip("/") if PETE_ONION else ""
+    if peer and not peer.startswith(("http://", "https://")):
+        peer = f"http://{peer}"
+    if not peer:
+        return {"ok": False, "detail": "missing lookup peer url"}
+    encoded = urllib.parse.urlencode({"lookup_token": str(handle or "").strip()})
+    url = f"{peer}/api/mesh/dm/prekey-bundle?{encoded}"
+    proc = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "shadowbroker-backend",
+            "curl",
+            "-s",
+            "--max-time",
+            "180",
+            "--socks5-hostname",
+            "127.0.0.1:9050",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=200,
+        check=False,
+    )
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise RuntimeError(proc.stderr.strip() or "direct tor prekey lookup produced no response")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return payload if isinstance(payload, dict) else {"ok": False, "detail": "invalid prekey response"}
+    bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else {}
+    dh_pub = (
+        str(payload.get("dh_pub_key") or payload.get("identity_dh_pub_key") or "").strip()
+        or str(bundle.get("identity_dh_pub_key") or bundle.get("dh_pub_key") or "").strip()
+    )
+    agent_id = str(payload.get("agent_id") or "").strip()
+    if agent_id and dh_pub:
+        return {"ok": True, "agent_id": agent_id, "dh_pub_key": dh_pub, "source": "direct_tor_prekey"}
+    return {"ok": False, "detail": "prekey bundle missing agent_id or dh_pub_key", "payload": payload}
+
+
 def _fleet_pubkey_lookup(handle: str, lookup_peer_url: str = "") -> dict:
+    hint = str(
+        lookup_peer_url or (f"http://{PETE_ONION}" if PETE_ONION else "")
+    ).strip()
+    last_error = ""
+    if ".onion" in hint:
+        try:
+            direct = _direct_tor_prekey_lookup(handle, hint)
+            if direct.get("ok") and direct.get("agent_id") and direct.get("dh_pub_key"):
+                print(json.dumps({"pubkey_lookup": {"source": "direct_tor_prekey", **direct}}, indent=2))
+                return direct
+            last_error = str(direct.get("detail", "") or direct)
+        except Exception as exc:
+            last_error = str(exc) or type(exc).__name__
+        print(json.dumps({"direct_tor_prekey_fallback": last_error}, indent=2))
     lookup_path = f"/api/mesh/dm/pubkey?lookup_token={urllib.parse.quote(handle, safe='')}"
     if lookup_peer_url:
         lookup_path += f"&lookup_peer_url={urllib.parse.quote(lookup_peer_url, safe='')}"
-    last_error = ""
     for attempt in range(3):
         if attempt:
-            print(f"pubkey lookup retry {attempt + 1}/3 after local backend recovery...")
+            print(f"pubkey lookup retry {attempt + 1}/3...")
             _ensure_local_api_responsive(reason="pubkey lookup")
             time.sleep(5)
         try:
-            lookup = _docker_json("GET", lookup_path, timeout_s=120)
+            lookup = _docker_json("GET", lookup_path, timeout_s=150)
             if lookup.get("ok") and lookup.get("agent_id") and lookup.get("dh_pub_key"):
                 return lookup
             last_error = str(lookup.get("detail", "") or lookup)
