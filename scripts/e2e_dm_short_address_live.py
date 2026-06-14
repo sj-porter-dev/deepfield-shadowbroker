@@ -40,7 +40,7 @@ TOR_ONLY = os.environ.get("E2E_DM_TOR_ONLY", "0").strip().lower() not in {
     "false",
     "no",
 }
-PETE_ONION = os.environ.get(
+PETE_ONION = os.environ.get("REMOTE_PARTICIPANT_ONION") or os.environ.get(
     "PETE_ONION",
     "nwbs4ur2usffb7lk3vyffhaqrijry544vmfjkk3qbrhvoh4v26fwxlid.onion:8000",
 ).strip()
