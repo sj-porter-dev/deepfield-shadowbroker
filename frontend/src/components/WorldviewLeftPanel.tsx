@@ -633,6 +633,16 @@ function SdrTracker({
   );
 }
 
+// Earth-imagery overlays are intentionally excluded from bulk toggle — stacking
+// GIBS, Sentinel Hub, nightlights, and high-res tiles is redundant/noisy.
+const TOGGLE_ALL_EXCLUDED_LAYERS = new Set<string>([
+  'gibs_imagery',
+  'highres_satellite',
+  'sentinel_hub',
+  'viirs_nightlights',
+  'road_corridor_trends',
+]);
+
 const WorldviewLeftPanel = React.memo(function WorldviewLeftPanel({
   activeLayers,
   setActiveLayers,
@@ -729,6 +739,31 @@ const WorldviewLeftPanel = React.memo(function WorldviewLeftPanel({
     },
     [needsConsentBeforeEnable],
   );
+
+  const isAllToggleableLayersOn = useMemo(
+    () =>
+      Object.entries(activeLayers)
+        .filter(([key]) => !TOGGLE_ALL_EXCLUDED_LAYERS.has(key))
+        .every(([, enabled]) => enabled),
+    [activeLayers],
+  );
+
+  const toggleAllLayers = useCallback(() => {
+    const enableAll = () => {
+      setActiveLayers((prev: ActiveLayers) => {
+        const next = { ...prev } as ActiveLayers;
+        for (const key of Object.keys(prev) as Array<keyof ActiveLayers>) {
+          next[key] = TOGGLE_ALL_EXCLUDED_LAYERS.has(String(key)) ? prev[key] : !isAllToggleableLayersOn;
+        }
+        return next;
+      });
+    };
+    if (!isAllToggleableLayersOn) {
+      withGlobalIncidentsConsent('global_incidents', true, enableAll);
+    } else {
+      enableAll();
+    }
+  }, [isAllToggleableLayersOn, setActiveLayers, withGlobalIncidentsConsent]);
 
   // Auto-detect: if the backend already has Mode B creds configured
   // (via env or a previous runtime save), promote the stored choice to
@@ -1456,45 +1491,16 @@ const WorldviewLeftPanel = React.memo(function WorldviewLeftPanel({
           </div>
           <div className="flex items-center gap-2">
             <button
-              title={
-                Object.entries(activeLayers)
-                  .filter(([k]) => !['gibs_imagery', 'highres_satellite', 'sentinel_hub', 'viirs_nightlights', 'road_corridor_trends'].includes(k))
-                  .every(([, v]) => v)
-                  ? 'Disable all layers'
-                  : 'Enable all layers'
-              }
+              title={isAllToggleableLayersOn ? 'Disable all layers' : 'Enable all layers'}
               className={`${
-                Object.entries(activeLayers)
-                  .filter(([k]) => !['gibs_imagery', 'highres_satellite', 'sentinel_hub', 'viirs_nightlights', 'road_corridor_trends'].includes(k))
-                  .every(([, v]) => v)
-                  ? 'text-cyan-400'
-                  : 'text-[var(--text-muted)]'
+                isAllToggleableLayersOn ? 'text-cyan-400' : 'text-[var(--text-muted)]'
               } hover:text-cyan-400 transition-colors`}
               onClick={(e) => {
                 e.stopPropagation();
-                const excluded = new Set(['gibs_imagery', 'highres_satellite', 'sentinel_hub', 'viirs_nightlights', 'road_corridor_trends']);
-                const allOn = Object.entries(activeLayers)
-                  .filter(([k]) => !excluded.has(k))
-                  .every(([, v]) => v);
-                const enableAll = () => {
-                  setActiveLayers((prev: ActiveLayers) => {
-                    const next = { ...prev } as ActiveLayers;
-                    for (const k of Object.keys(prev) as Array<keyof ActiveLayers>) {
-                      next[k] = excluded.has(k) ? prev[k] : !allOn;
-                    }
-                    return next;
-                  });
-                };
-                if (!allOn) {
-                  withGlobalIncidentsConsent('global_incidents', true, enableAll);
-                } else {
-                  enableAll();
-                }
+                toggleAllLayers();
               }}
             >
-              {Object.entries(activeLayers)
-                .filter(([k]) => !['gibs_imagery', 'highres_satellite', 'sentinel_hub', 'viirs_nightlights'].includes(k))
-                .every(([, v]) => v) ? (
+              {isAllToggleableLayersOn ? (
                 <ToggleRight size={22} />
               ) : (
                 <ToggleLeft size={22} />

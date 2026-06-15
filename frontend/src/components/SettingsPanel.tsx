@@ -171,6 +171,40 @@ function migratePrivacySensitiveBrowserState(): void {
 
 const MAX_FEEDS = 50;
 
+function formatFeedSettingsError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (!message) return fallback;
+  if (message === 'admin_session_required') {
+    return 'Admin key required — paste ADMIN_KEY in Settings and unlock operator tools.';
+  }
+  if (message === 'backend_unavailable' || message === 'local_control_plane_unavailable') {
+    return 'Backend unavailable — check that the backend container is running.';
+  }
+  if (message === 'control_plane_rate_limited') {
+    return 'Too many requests — wait a moment and try again.';
+  }
+  return message;
+}
+
+function validateFeedEntries(feeds: FeedEntry[]): string | null {
+  for (const [idx, feed] of feeds.entries()) {
+    const name = feed.name.trim();
+    const url = feed.url.trim();
+    if (!name || !url) {
+      return `Feed ${idx + 1} needs both a name and URL before saving.`;
+    }
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return `Feed ${idx + 1} must use an http:// or https:// URL.`;
+      }
+    } catch {
+      return `Feed ${idx + 1} has an invalid URL.`;
+    }
+  }
+  return null;
+}
+
 // Category colors for the tactical UI
 const CATEGORY_COLORS: Record<string, string> = {
   Aviation: 'text-cyan-400 border-cyan-500/30 bg-cyan-950/20',
@@ -606,7 +640,11 @@ const SettingsPanel = React.memo(function SettingsPanel({
 
   const fetchFeeds = useCallback(async () => {
     try {
-      setFeeds(await controlPlaneJson<FeedEntry[]>('/api/settings/news-feeds'));
+      setFeeds(
+        await controlPlaneJson<FeedEntry[]>('/api/settings/news-feeds', {
+          requireAdminSession: false,
+        }),
+      );
       setFeedsDirty(false);
       return true;
     } catch (e) {
@@ -769,11 +807,10 @@ const SettingsPanel = React.memo(function SettingsPanel({
       void fetchEnvMeta();
       return;
     }
-    if (!adminSessionReady) return;
     if (activeTab === 'news-feeds') {
       void fetchFeeds();
     }
-  }, [isOpen, adminSessionReady, activeTab, fetchKeys, fetchEnvMeta, fetchFeeds]);
+  }, [isOpen, activeTab, fetchKeys, fetchEnvMeta, fetchFeeds]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'protocol' || !showOperatorTools) return;
@@ -828,6 +865,11 @@ const SettingsPanel = React.memo(function SettingsPanel({
   };
 
   const saveFeeds = async () => {
+    const validationError = validateFeedEntries(feeds);
+    if (validationError) {
+      setFeedMsg({ type: 'err', text: validationError });
+      return;
+    }
     setFeedSaving(true);
     setFeedMsg(null);
     try {
@@ -835,6 +877,7 @@ const SettingsPanel = React.memo(function SettingsPanel({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(feeds),
+        requireAdminSession: false,
       });
       if (res.ok) {
         setFeedsDirty(false);
@@ -844,28 +887,45 @@ const SettingsPanel = React.memo(function SettingsPanel({
         });
       } else {
         const d = await res.json().catch(() => ({}));
-        setFeedMsg({ type: 'err', text: d.message || 'Save failed' });
+        setFeedMsg({
+          type: 'err',
+          text: String(d.message || d.detail || 'Save failed'),
+        });
       }
-    } catch {
-      setFeedMsg({ type: 'err', text: 'Network error' });
+    } catch (error) {
+      setFeedMsg({
+        type: 'err',
+        text: formatFeedSettingsError(error, 'Could not reach the settings API'),
+      });
     } finally {
       setFeedSaving(false);
     }
   };
 
   const resetFeeds = async () => {
+    setFeedMsg(null);
     try {
       const res = await controlPlaneFetch('/api/settings/news-feeds/reset', {
         method: 'POST',
+        requireAdminSession: false,
       });
       if (res.ok) {
         const d = await res.json();
         setFeeds(d.feeds || []);
         setFeedsDirty(false);
         setFeedMsg({ type: 'ok', text: 'Reset to defaults' });
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setFeedMsg({
+          type: 'err',
+          text: String(d.message || d.detail || 'Reset failed'),
+        });
       }
-    } catch {
-      setFeedMsg({ type: 'err', text: 'Reset failed' });
+    } catch (error) {
+      setFeedMsg({
+        type: 'err',
+        text: formatFeedSettingsError(error, 'Could not reach the settings API'),
+      });
     }
   };
 
